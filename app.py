@@ -65,10 +65,10 @@ DISPLAY_GROUP_HINTS = {
 MIN_PRACTICE_YD = 2000
 
 CSV_HEADERS = [
-    "Week", "Workout", "Method", "Default Group",
+    "Week", "Workout", "Method", "Group source",
     "Sprint yd", "Mid yd", "Distance yd",
     "Sprint m", "Mid m", "Distance m",
-    "Total yd", "Total m", "Below 2000 yd?",
+    "Total yd", "Total m", "Manual yd", "Checkpoint yd", "Below 2000 yd?",
 ]
 
 
@@ -179,6 +179,25 @@ def is_below_threshold(totals: Dict[str, int]) -> bool:
     return 0 < y < MIN_PRACTICE_YD
 
 
+def attribution_label(w: dict) -> str:
+    """Human-readable provenance of a sub-session's group attribution.
+
+    Distinguishes doc-labeled splits from coach-inferred assumptions so
+    the user can see when a number rests on an assumption vs an explicit
+    label in the workout:
+      labeled     -> 'by label'   (explicit SPRINT/MID/DISTANCE sections)
+      assumed     -> 'GROUP (assumed)' e.g. 'distance (assumed)' — inferred
+                     from the Coach: line, no group label in the workout
+      unspecified -> 'whole-team' (no sections, no coach -> all)
+    """
+    attr = w.get("attribution", "")
+    if attr == "labeled":
+        return "by label"
+    if attr == "assumed":
+        return f"{w['default_group']} (assumed)"
+    return "whole-team"
+
+
 def workouts_to_markdown(workouts: List[dict], header_max: int = 60) -> str:
     """Render the workout list as a GitHub-flavored markdown table.
 
@@ -187,12 +206,14 @@ def workouts_to_markdown(workouts: List[dict], header_max: int = 60) -> str:
     tables render natively in Streamlit with no extra dependency.
     Long workout headers are truncated to header_max chars so the table
     stays readable on narrow screens. A ⚠️ flag is appended to any
-    workout under MIN_PRACTICE_YD so it's spottable in-table.
+    workout under MIN_PRACTICE_YD so it's spottable in-table. The
+    'Group source' column shows whether the split came from explicit
+    doc labels or was assumed from the coach (see attribution_label).
     """
     lines = [
-        "| Week | Workout | Default | Method "
+        "| Week | Workout | Group source | Method "
         "| Sprint | Mid | Distance | Total yd | Total m |",
-        "|---:|:---|:---:|:---:|---:|---:|---:|---:|---:|",
+        "|---:|:---|:---|:---:|---:|---:|---:|---:|---:|",
     ]
     for w in workouts:
         t = w["totals"]
@@ -204,7 +225,7 @@ def workouts_to_markdown(workouts: List[dict], header_max: int = 60) -> str:
         flag = " ⚠️" if is_below_threshold(t) else ""
         disp = group_displays(t)
         lines.append(
-            f"| {w['week']} | {hdr}{flag} | {w['default_group']} | {w['method']} "
+            f"| {w['week']} | {hdr}{flag} | {attribution_label(w)} | {w['method']} "
             f"| {disp['sprint']['y']:,} | {disp['mid']['y']:,} "
             f"| {disp['distance']['y']:,} "
             f"| {_yard_total(t):,} | {_meter_total(t):,} |"
@@ -265,10 +286,11 @@ def workouts_to_csv(workouts: List[dict]) -> str:
         t = w["totals"]
         disp = group_displays(t)
         writer.writerow([
-            w["week"], w["header"], w["method"], w["default_group"],
+            w["week"], w["header"], w["method"], attribution_label(w),
             disp["sprint"]["y"], disp["mid"]["y"], disp["distance"]["y"],
             disp["sprint"]["m"], disp["mid"]["m"], disp["distance"]["m"],
             _yard_total(t), _meter_total(t),
+            w.get("manual_total", ""), w.get("checkpoint_total", ""),
             "YES" if is_below_threshold(t) else "",
         ])
     return buf.getvalue()
@@ -391,19 +413,27 @@ def build_xlsx(results: Dict) -> bytes:
     autosize(ws)
 
     # ---- Sheet 4: Workouts ----
+    # 'Group source' tells the reader whether the split came from explicit
+    # doc labels or was assumed from the coach. 'Manual yd' / 'Checkpoint yd'
+    # expose both signals so a reviewer can see where they diverge (the
+    # session total is the larger of the two for single-group sessions, and
+    # the manual sum for labeled parallel-group sessions).
     ws = wb.create_sheet("Workouts")
-    write_header(ws, ["Week", "Day", "Workout", "Default Group", "Method",
+    write_header(ws, ["Week", "Day", "Workout", "Group source", "Method",
                       "Sprint", "Mid", "Distance",
-                      "Total yd", "Total m", f"Below {MIN_PRACTICE_YD} yd?"])
+                      "Total yd", "Total m",
+                      "Manual yd", "Checkpoint yd",
+                      f"Below {MIN_PRACTICE_YD} yd?"])
     for w in results["workouts"]:
         t = w["totals"]
         d = group_displays(t)
         below = is_below_threshold(t)
         ws.append([
             w["week"], w.get("day", "").capitalize(), w["header"],
-            w["default_group"], w["method"],
+            attribution_label(w), w["method"],
             d["sprint"]["y"], d["mid"]["y"], d["distance"]["y"],
             _yard_total(t), _meter_total(t),
+            w.get("manual_total", ""), w.get("checkpoint_total", ""),
             "YES" if below else "",
         ])
         if below:
@@ -413,7 +443,28 @@ def build_xlsx(results: Dict) -> bytes:
 
     # ---- Sheet 5: Validation ----
     ws = wb.create_sheet("Validation")
-    write_header(ws, ["Week", "Day", "Workout", "Default Group",
+
+    # 5a: zero-group weeks (attribution-failure red flag).
+    ws.append(["ZERO-GROUP CHECK"])
+    ws[ws.max_row][0].font = bold
+    zero_hits = []
+    for wn in sorted(results["weekly_subtotals"]):
+        disp = group_displays(results["weekly_subtotals"][wn])
+        for key in DISPLAY_GROUP_KEYS:
+            if disp[key]["y"] == 0 and disp[key]["m"] == 0:
+                zero_hits.append((wn, DISPLAY_GROUP_LABELS[key]))
+    if zero_hits:
+        for wn, label in zero_hits:
+            ws.append([f"Week {wn}: {label} has 0 yd — likely attribution gap"])
+            ws[ws.max_row][0].fill = flag_fill
+    else:
+        ws.append(["OK — every group has yardage in every week."])
+    ws.append([])
+
+    # 5b: below-threshold sub-sessions.
+    ws.append([f"SUB-SESSIONS BELOW {MIN_PRACTICE_YD:,} yd"])
+    ws[ws.max_row][0].font = bold
+    write_header(ws, ["Week", "Day", "Workout", "Group source",
                       "Total yd", "Total m"])
     flagged = [w for w in results["workouts"] if is_below_threshold(w["totals"])]
     flagged.sort(key=lambda w: (w["week"], w["header"]))
@@ -421,11 +472,11 @@ def build_xlsx(results: Dict) -> bytes:
         t = w["totals"]
         ws.append([
             w["week"], w.get("day", "").capitalize(), w["header"],
-            w["default_group"], _yard_total(t), _meter_total(t),
+            attribution_label(w), _yard_total(t), _meter_total(t),
         ])
     ws.append([])
     ws.append([
-        f"All rows above are sub-sessions with non-zero yardage below "
+        f"Rows above are sub-sessions with non-zero yardage below "
         f"{MIN_PRACTICE_YD:,} yd. These are either real light days "
         "(taper / recovery / dual-meet warmup) or a sign the parser "
         "missed yardage from that block — worth a manual check."
@@ -585,6 +636,33 @@ def render_weekly_validation(results: Dict) -> None:
     flag counts but included in the sub-session count for transparency.
     """
     st.subheader("Weekly Validation")
+
+    # Zero-group check. A whole training group reading 0 for an entire
+    # week is almost always an attribution failure, not reality (every
+    # squad swims every week). Surface it loudly at the top so it can't
+    # be missed. Uses the folded display values (own + whole-team), which
+    # is what the rest of the page shows.
+    zero_hits = []
+    for week_num in sorted(results["weekly_subtotals"]):
+        disp = group_displays(results["weekly_subtotals"][week_num])
+        for key in DISPLAY_GROUP_KEYS:
+            if disp[key]["y"] == 0 and disp[key]["m"] == 0:
+                zero_hits.append((week_num, DISPLAY_GROUP_LABELS[key]))
+    if zero_hits:
+        st.error(
+            "**Zero-yardage groups detected — likely an attribution gap:**\n\n"
+            + "\n".join(
+                f"- Week {wn}: **{label}** has 0 yd" for wn, label in zero_hits
+            )
+            + "\n\nEvery squad normally swims every week, so a 0 here usually "
+            "means a workout's group label wasn't recognized. Worth a manual "
+            "check of that week's source text."
+        )
+    else:
+        st.success(
+            "✅ Every group has yardage in every week — no zero-group gaps."
+        )
+
     st.caption(
         f"Expected minimum: **{MIN_PRACTICE_YD:,} yd per practice**. "
         "Weeks with sub-sessions below this are flagged ⚠️ — usually "
@@ -619,7 +697,7 @@ def render_weekly_validation(results: Dict) -> None:
                     yd = _yard_total(w["totals"])
                     st.markdown(
                         f"- _{w['header']}_  — **{yd:,} yd**  "
-                        f"(default: {w['default_group']}, method: {w['method']})"
+                        f"(group: {attribution_label(w)}, method: {w['method']})"
                     )
         else:
             st.markdown(

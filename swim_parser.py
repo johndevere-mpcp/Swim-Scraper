@@ -447,6 +447,21 @@ def detect_group_header(line: str):
     return "mid"
 
 
+def body_has_group_sections(body: List[str]) -> bool:
+    """True if the body contains at least one explicit group-section header.
+
+    A group-section header is a line that starts with SPRINT / MID /
+    DISTANCE / MID-DISTANCE (see detect_group_header). When present, the
+    session is a 'parallel-group' workout: one coach writes separate
+    sets for each squad in a single block. In that case the content
+    OUTSIDE any section (the shared warm-up) is whole-team work and is
+    attributed to 'all' rather than the coach's own group — see
+    compute_workout_totals. A session with no such header is a single-
+    group practice and the whole block is attributed to the coach's group.
+    """
+    return any(detect_group_header(ln) is not None for ln in body)
+
+
 def parse_name_list(text: str) -> List[str]:
     """Split a comma-separated athlete-name list into lowercased names.
 
@@ -999,15 +1014,44 @@ def compute_workout_totals(text: str,
             continue
         body_text = "\n".join(body)
         unit = "m" if is_meter_workout(body_text) else "y"
-        default_group = coach_group_from_body(body_text, header, rosters)
-        manual, _ = parse_block(body, unit=unit, default_group=default_group)
+        coach_group = coach_group_from_body(body_text, header, rosters)
+        has_sections = body_has_group_sections(body)
+
+        # Shared warm-up -> All. In a parallel-group session (one coach,
+        # explicit SPRINT/MID/DISTANCE sections), the content before/outside
+        # any section is whole-team work and must be attributed to 'all' so
+        # it folds into every group's displayed total — otherwise it lands
+        # on the coach's own group (inflating it) and any squad whose
+        # section is absent reads as 0 (e.g. Week 18 distance). In a single-
+        # group session (no sections) the whole block is the coach's group.
+        parse_default = "all" if has_sections else coach_group
+        manual, _ = parse_block(body, unit=unit, default_group=parse_default)
 
         cp_max = extract_checkpoint_max(body_text)
         manual_total = _yard_total(manual) if unit == "y" else _meter_total(manual)
+
+        # Checkpoint gap-fill is trustworthy only for single-group sessions.
+        # In a parallel-group session the doc's running totals track ONE
+        # squad's cumulative (the mid-distance lane's 6,550, say), not the
+        # multi-squad session sum — so gap-filling against it would mangle
+        # the split. There we trust the manual NxDIST sum.
         method = "manual"
-        if cp_max > manual_total:
-            _assign_gap(manual, unit, cp_max - manual_total, default_group)
+        if not has_sections and cp_max > manual_total:
+            _assign_gap(manual, unit, cp_max - manual_total, coach_group)
             method = "checkpoint"
+
+        # Attribution provenance, surfaced in the UI so coach-inferred
+        # groups are visibly distinguished from doc-labeled ones:
+        #   labeled     - body had explicit SPRINT/MID/DISTANCE sections
+        #   assumed     - no sections; group inferred from 'Coach: X'
+        #   unspecified - no sections and no coach -> whole-team ('all')
+        if has_sections:
+            attribution = "labeled"
+        elif coach_group != "all":
+            attribution = "assumed"
+        else:
+            attribution = "unspecified"
+
         y_total = _yard_total(manual)
         m_total = _meter_total(manual)
         if y_total == 0 and m_total == 0:
@@ -1047,7 +1091,11 @@ def compute_workout_totals(text: str,
             "day": day_name,
             "header": header,
             "method": method,
-            "default_group": default_group,
+            "default_group": coach_group,
+            "attribution": attribution,
+            "has_sections": has_sections,
+            "manual_total": manual_total,
+            "checkpoint_total": cp_max,
             "totals": manual,
         })
         accumulate(grand, manual)
