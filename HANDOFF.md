@@ -69,7 +69,52 @@ Corollary attribution rule confirmed from the doc: a tab whose body says
 chain (e.g. `700 → 1300 → 3100 → 4000`) is ONE whole-team session → the
 "all" bucket (folds into every group). Don't split it by the coach list.
 
-### 0.3 Then: build to the ground-truth fixtures (§2) and assert, don't eyeball.
+### 0.3 EXTRACTION ALGORITHM (decided): max cumulative checkpoint per tab, summed. Manual sum is only a fallback.
+
+The whole yardage computation is small and needs NO per-workout
+hardcoding. Per session tab (and each of its child squad-tabs):
+
+```
+for each session tab (and each child squad-tab):
+    cumulatives = every cumulative-checkpoint value in the tab body,
+                  across the 5 finite notations (see §4):
+                    ####/####            -> take the RIGHT side
+                    [####m / ####m]      -> right side  (or the solo [####m] value)
+                    [####yds / ####yds]  -> right side  (or the solo [####yds] value)
+                    " - ####"  (line end)-> the number
+                    bare #### alone on a line (>= 500)
+    # strip commas first; reject false-positive "/" from dates (8/27),
+    # drill ratios (2/2/2), and clock times (@1:30 -> has ":" not "/").
+    tab_total = max(cumulatives)            # correct WITHIN one chain
+    if not cumulatives:                     # ~4% of blocks have no marker
+        tab_total = sum of NxDIST sets      # fallback ONLY when no checkpoint
+session_total = sum of the tab/squad totals # the locked counting rule (§0.2)
+```
+
+**Why `max`, and why per tab:** a checkpoint `1800/3100` means "this set
+was 1,800; running total is 3,100." The cumulative (right side) at the end
+of a chain IS the tab's total, so `max(cumulatives)` = tab total. Example:
+`700/900  800/1500  8000/9500` → **9,500**. Take the max of the CUMULATIVE
+values specifically — not every number on the page — or a year (`2025`) or
+a stray large number becomes a false max on a light day.
+
+**THE TRAP — do NOT detect multiple "chains" inside a block by watching for
+the cumulative resetting.** On flattened text it over-counts badly. Tested
+on Weeks 1–5 vs ground truth:
+
+| approach | result |
+|---|---|
+| max cumulative per block, summed | **−1.1%** (good) |
+| "sum every chain peak" (reset-detect) | **+10.3%** (Wk5 blew up 114k → 141k) |
+
+Reason: on flat text the cumulative list is noisy (stray bare numbers,
+per-set values), so a harmless downward blip looks like a "new chain" and
+spawns a phantom total. The CORRECT way to separate parallel chains is the
+**tab structure (§0.1)**: one squad per tab = one chain per tab, so
+`max(cumulatives)` per tab is exactly right and you simply **sum the tabs**.
+Never reset-detect on flattened text — let the tabs do the separation.
+
+### 0.4 Then: build to the ground-truth fixtures (§2) and assert, don't eyeball.
 
 The boss hand-tallied Weeks 1–5 (`§2`). Reproduce them in automated tests.
 The old parser had no fixture and validated by "does the total look
@@ -427,6 +472,13 @@ in extending the regex parser.
 >    near-identical text** — never merge on shared date/day/coach. A tab with
 >    `Coach: <all four>` + `Athletes: All` and one checkpoint chain is a
 >    single whole-team session → "all" bucket. (HANDOFF §0.2)
+>
+> 2b. **Extraction algorithm (HANDOFF §0.3): per tab, take `max` of the
+>    cumulative checkpoint values across the 5 notations; fall back to summing
+>    NxDIST sets ONLY when a tab has no checkpoint; then sum the tabs.** Do
+>    NOT try to detect multiple chains inside a block by watching for the
+>    cumulative resetting — it over-counts ~10% on flat text. One squad per
+>    tab means one chain per tab, so max-per-tab is correct by construction.
 >
 > Then, before shipping:
 >
