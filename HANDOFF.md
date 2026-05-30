@@ -49,7 +49,7 @@ total" counts every yard once.
 
 ---
 
-## 2. GROUND TRUTH — manual tally, Weeks 1–3 (from the boss)
+## 2. GROUND TRUTH — manual tally, Weeks 1–5 (from the boss)
 
 These are hand-counted by the boss. **Use as regression fixtures.**
 
@@ -83,7 +83,30 @@ WEEK 3  (73,575 yd)
   Fri PM   4,800 yd
   Sat AM   400 + 400 + 200 + 600 + 1,200 + 800 + 600 + 400 + 200 + 600 + 600 + 600 + 200 yd
 
-TOTAL Weeks 1-3: 142,125 yd + 3,800 m
+WEEK 4  (86,675 yd)
+  Mon AM   6,000 + 4,300 + 5,000 yd
+  Mon PM   5,600 + 300 + 100 + 200 + 300 + 200 + 50 + 200 + 150 + 200 + 2,150 yd
+  Tue AM   2,000 + 3,200 + 500 + 625 + 75 + 75 yd
+  Wed AM   6,500 + 5,300 yd
+  Wed PM   3,300 + 5,400 + 3,200 yd
+  Thu AM   2,800 + 450 + 200 + 450 + 7,000 + 1,100 yd
+  Fri AM   2,800 + 7,000 + 1,100 + 3,150 + 5,000 + 700 yd
+    (NOTE: Thu AM & Fri AM share 2,800 + 7,000 + 1,100 — confirm this is
+     real recurrence, not a number carried between days, before trusting Wk4.)
+
+WEEK 5  (114,050 yd)
+  Mon AM   6,700 + 5,000 + 5,500 yd
+  Mon PM   2,700 + 3,000 + 5,600 yd     (boss read "2703,000" as 2,700 + 3,000)
+  Tue AM   7,600 + 3,600 + 3,200 + 700 + 200 yd
+  Wed AM   5,300 + 5,100 + 6,500 + 6,550 yd
+  Wed PM   6,550 + 2,700 yd
+  Thu AM   5,250 yd
+  Fri AM   6,700 + 4,650 yd              (boss noted a leading-digit/typo assumption)
+  Fri PM   5,200 + 5,500 yd
+  Sat AM   4,050 + 6,200 yd
+
+TOTAL Weeks 1-5: 342,850 yd + 3,800 m
+  (Wk1 35,800y+3,800m · Wk2 32,750y · Wk3 73,575y · Wk4 86,675y · Wk5 114,050y)
 ```
 
 ### Where the old parser diverged from this ground truth
@@ -93,7 +116,9 @@ TOTAL Weeks 1-3: 142,125 yd + 3,800 m
 | 1 | 35,800 yd + 3,800 m | 35,350 yd + 3,800 m | −450 |
 | 2 | 32,750 yd | 39,600 yd | **+6,850** |
 | 3 | 73,575 yd | 77,750 yd | **+4,175** |
-| **1–3** | **142,125 yd** | 152,700 yd | **+10,575 (~7% over)** |
+| 4 | 86,675 yd | 82,300 yd | **−4,375** |
+| 5 | 114,050 yd | 117,250 yd | **+3,200** |
+| **1–5** | **342,850 yd** | 352,250 yd | **+9,400 (~2.7% over)** |
 
 **Diagnosis of the divergence — this is the key lesson:**
 
@@ -108,11 +133,20 @@ TOTAL Weeks 1-3: 142,125 yd + 3,800 m
   - W2 Thu: parser counted 5,550 **+ a Coach Noah 5,100 block**; boss
     counted only ~5,650.
 
+- **Weeks 4 & 5 (mixed):** the error flips sign — Wk4 the parser is
+  *under* by 4,375, Wk5 *over* by 3,200. The divergence is **not a
+  consistent bias**, which rules out a single fixable offset. It's the
+  combination of (a) the parallel-block counting ambiguity and (b)
+  parsing-granularity differences in how a session's sub-pieces are
+  grouped. The signed errors partially cancel, so the 5-week total
+  (+2.7%) looks better than any individual week — do NOT be fooled by a
+  good-looking grand total; validate per week.
+
   So the parser sums *every* coach's block for a session; the boss's
-  manual count does **not**. **This is the unresolved definition in §3.**
-  Neither is obviously "right" — it depends on what the boss means by a
-  session total. THIS ambiguity, not regex bugs, is the dominant error
-  source.
+  manual count does **not** (consistently). **This is the unresolved
+  definition in §3.** Neither is obviously "right" — it depends on what
+  the boss means by a session total. THIS ambiguity, not regex bugs, is
+  the dominant error source.
 
 ---
 
