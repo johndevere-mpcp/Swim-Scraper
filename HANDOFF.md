@@ -8,21 +8,74 @@
 
 ---
 
-## 0. Start here — do these THREE things first, in order
+## 0. Start here — the two decisions below are now LOCKED
 
-1. **Resolve the counting definition with the boss (see §3).** This is the
-   reason every prior attempt drifted. Do not write a parser until you can
-   answer: *"When 3 coaches each write a block for the same morning session
-   (different squads/lanes), is the session's total the SUM of all blocks,
-   or one representative block?"* Everything downstream depends on this.
+### 0.1 ARCHITECTURE (decided): read the Google Doc by TAB via the API. Do NOT parse the txt export.
 
-2. **Treat the manual Week 1–3 tally (§2) as your test fixture.** Build to
-   reproduce those numbers exactly. Do not guess and eyeball — assert
-   against ground truth. The prior attempt had no fixture and validated by
-   "does the total look plausible," which is how it stayed ~7% off.
+The source is a **Google Doc with a tab tree**, and that tree *is* the
+structure every prior attempt tried (and failed) to reconstruct from
+flattened text:
 
-3. **Reconsider the input format (§6).** The source document is the real
-   problem, not the parser. Decide format before architecture.
+```
+(Doc)
+├─ Activation sequence … (reference tab — NOT a workout; skip)
+├─ Week 1                         ← parent tab = the week number
+│   ├─ Monday AM 1                ← child tab = one session (title = day + AM/PM + wk)
+│   ├─ Tuesday AM 1
+│   ├─ Wednesday AM 1
+│   ├─ Wednesday PM 1
+│   ├─ Thursday AM 1
+│   ├─ Friday AM 1
+│   └─ Saturday AM 1
+├─ week 2
+│   ├─ tuesday AM
+│   ├─ wednesday AM (opt)
+│   │    └─ wednesday PM           ← nested child tabs exist
+│   ├─ thursday AM   (badge "6")   ← the badge = N child tabs = parallel squads
+│   ├─ friday am     (badge "1")
+│   └─ saturday am
+└─ Week 3 …
+```
+
+**Every hard problem the old parser had — session boundaries, "did the day
+change," underscore shredding, where a block ends, double-counting — exists
+ONLY because the .txt export flattened this tree and threw the structure
+away.** Read the live doc with the **Google Docs API**, which returns tabs
+natively (`documents.get` with `includeTabsContent=true`; walk
+`document.tabs[].childTabs[]`). Then:
+
+- **Week** = the parent (`Week N`) tab. No date parsing, ever.
+- **Session** = a child tab; its **title** gives day + AM/PM (e.g.
+  `Monday AM 1`). Titles have NO dates — don't look for them.
+- **Parallel squads** = nested child tabs and/or repeated `Coach:`/date
+  blocks inside one tab. Sum them (see 0.2).
+- Skip the `Activation sequence` tab (reference material, not a workout).
+
+Boundary detection becomes essentially free. This is the single biggest
+lever; do this before anything else. (If you truly cannot get API access,
+the txt fallback rules are in §4/§5 — but treat that as a last resort.)
+
+### 0.2 COUNTING DEFINITION (decided): sum every DISTINCT squad block; dedupe only on near-identical text.
+
+A session's total = the **sum of every distinct coach/squad block** in it
+(each squad swims its own yardage; the boss wants per-group numbers, which
+requires counting each separately). Two blocks merge **only** if their text
+is essentially byte-identical (a literal copy-paste artifact) — **never**
+because they share a date, day, or coach name. A repeated date/day is
+parallel squads, not a duplicate.
+
+Corollary attribution rule confirmed from the doc: a tab whose body says
+`Coach: Dave, David, Josh, Noah` + `Athletes: All` with a SINGLE checkpoint
+chain (e.g. `700 → 1300 → 3100 → 4000`) is ONE whole-team session → the
+"all" bucket (folds into every group). Don't split it by the coach list.
+
+### 0.3 Then: build to the ground-truth fixtures (§2) and assert, don't eyeball.
+
+The boss hand-tallied Weeks 1–5 (`§2`). Reproduce them in automated tests.
+The old parser had no fixture and validated by "does the total look
+plausible" — that's how it stayed ±5–9% per week. STILL NEEDED before
+shipping: ~2 weeks of *per-group* truth (Sprint/Mid/Distance split), since
+the §2 fixtures are session totals and can't validate the group breakdown.
 
 ---
 
@@ -150,7 +203,13 @@ TOTAL Weeks 1-5: 342,850 yd + 3,800 m
 
 ---
 
-## 3. THE core ambiguity (resolve before coding)
+## 3. THE core ambiguity — RESOLVED (see §0.2)
+
+> **DECIDED with the boss:** sum every distinct coach/squad block; dedupe
+> only on near-identical text (interpretation A below). The rest of this
+> section is kept as the rationale. The Week 2–4 cases where the boss's
+> manual tally was lower were hand-counting misses of secondary blocks,
+> not a deliberate "count once" rule.
 
 The document frequently has **multiple coaches writing blocks for the same
 session slot** (e.g. Wednesday AM has Noah's lane, Dave's lane, Josh's
@@ -291,6 +350,13 @@ silently dropped ~11k yd.
 
 ## 6. Is a .txt file the problem? (format recommendation)
 
+> **DECIDED (see §0.1): read the Google Doc by tab via the Google Docs
+> API.** The structure we needed already exists in the doc's tab tree; the
+> .txt export destroyed it. Everything below is the original analysis that
+> led here — kept for context. The winning option turned out to be better
+> than all three: the source ALREADY has structure (tabs), we were just
+> reading a flattened copy of it.**
+
 **The format is a symptom; the root problem is that the source has no
 structure.** It's free-form coaching prose with per-coach conventions.
 Switching file formats only helps if it adds structure. Three real paths,
@@ -341,39 +407,45 @@ in extending the regex parser.
 
 > I'm building a tool that totals swim-practice yardage for a college team,
 > broken down by training group (Sprint=Dave, Mid=Josh, Distance=Noah), per
-> week and per day. The input is a free-form coaching document (currently
-> .txt exported from a Google Doc; I'm open to changing the format).
+> week and per day. The source is a **Google Doc organized into tabs** (one
+> tab per session, grouped under per-week parent tabs). A prior attempt
+> parsed a flattened .txt export and kept getting totals wrong; we since
+> learned the tab structure is the key and two core decisions are locked.
 >
-> **Before writing any code, do these in order:**
+> **Read `HANDOFF.md` in full first.** It has the domain rules, the document
+> conventions, the ground-truth fixtures, and the mistakes to avoid. Two
+> decisions are already settled — do NOT relitigate them, just implement:
 >
-> 1. Read `HANDOFF.md` in full. It documents the domain rules, the document's
->    conventions, and the specific mistakes the last attempt made.
+> 1. **Architecture: read the Google Doc by tab via the Google Docs API**
+>    (`documents.get` with `includeTabsContent=true`; walk `tabs[].childTabs`).
+>    Week = parent tab; session = child tab (title = day + AM/PM, NO dates);
+>    parallel squads = nested child tabs / repeated Coach blocks. Do NOT
+>    parse the .txt export — flattening it is what caused every boundary bug.
+>    Skip the `Activation sequence` tab. (HANDOFF §0.1)
 >
-> 2. The hardest part is NOT parsing — it's a definition I must settle first:
->    when multiple coaches write separate blocks for the same session slot
->    (different squads in different lanes), does the session total SUM all
->    blocks or count one? Ask me this explicitly and wait for my answer.
->    Restate the rule back to me in one sentence before proceeding.
+> 2. **Counting: sum every distinct coach/squad block; dedupe only on
+>    near-identical text** — never merge on shared date/day/coach. A tab with
+>    `Coach: <all four>` + `Athletes: All` and one checkpoint chain is a
+>    single whole-team session → "all" bucket. (HANDOFF §0.2)
 >
-> 3. Use the Week 1–3 hand-tally in `HANDOFF.md §2` as a hard test fixture.
->    Your per-week totals must reproduce: Week 1 = 35,800 yd + 3,800 m,
->    Week 2 = 32,750 yd, Week 3 = 73,575 yd (subject to the §3 ruling, which
->    may legitimately revise Weeks 2–3 upward — confirm with me). Assert
->    against these numbers in automated tests; do not validate by eyeballing.
+> Then, before shipping:
 >
-> 4. Recommend an architecture. Given the source is unstructured prose with
->    per-coach notations, seriously evaluate (a) getting the data entered in
->    a structured sheet, or (b) LLM-per-day extraction with a strict schema
->    and the doc's cumulative checkpoints as a cross-check — over (c)
->    extending regex. Justify your choice against the §6 analysis.
+> 3. Reproduce the boss's hand-tallied fixtures (HANDOFF §2) in automated
+>    tests — Wk1 35,800 yd + 3,800 m, Wk2 32,750, Wk3 73,575, Wk4 86,675,
+>    Wk5 114,050. Assert; do not eyeball. Expect parser numbers to differ
+>    from these by a few % per week (the boss missed some secondary blocks
+>    while hand-counting); investigate every diff, don't auto-trust either.
+>
+> 4. Ask me for ~2 weeks of *per-group* ground truth (Sprint/Mid/Distance
+>    split) — the §2 fixtures are session totals and can't validate the
+>    group breakdown, which is the actual deliverable.
 >
 > 5. Keep yards and meters separate (an LCM day is meters; "LCM" in a title
->    does not by itself mean meters — only `[1,500m]` brackets do).
+>    does NOT by itself mean meters — only an explicit `[1,500m]` bracket does).
 >
-> Do not start coding until steps 2 and 3 are settled with me. When you do,
-> build the smallest thing that reproduces the §2 fixtures, then expand.
-> Treat any training group reading 0 yards for a whole week as a bug to
-> investigate, not a number to display.
+> Build the smallest thing that reads the tabs and reproduces the §2
+> fixtures, then expand. Treat any training group reading 0 yards for a whole
+> week as a bug to investigate, not a number to display.
 
 ---
 
